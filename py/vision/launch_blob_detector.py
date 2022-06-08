@@ -40,25 +40,27 @@ _PROPS = flags.DEFINE_list(
 _VISUALISE = flags.DEFINE_boolean(
     name="visualize",
     default=False,
-    help="Whether to publish helper images of the detected blobs or not.")
+    help="Whether to publish helper images of the detected blobs or not.",
+)
 
 _TOOLKIT = flags.DEFINE_boolean(
     name="toolkit",
     default=False,
     help=("Whether to display a YUV GUI toolkit to find good YUV parameters to "
-          "detect blobs or not. Sets `visualize = True`."))
+          "detect blobs or not. Sets `visualize = True`."),
+)
 
 
 def main(_):
   logging.info("Collecting configuration parameters.")
   config = config_blob_detector.get_config()
   try:
-    namespace = config.camera_namespaces[_CAMERA.value]
+    topic = config.topic_by_camera_name[_CAMERA.value]
   except KeyError as ke:
     raise ValueError("Please provide the name of one of the cameras listed in "
                      "the config `camera_namespaces` attribute. "
-                     f"Provided: {_CAMERA.value}. "
-                     f"Available: {[cam for cam in config.camera_namespaces]}.")
+                     f"Provided: {_CAMERA.value}. Available: "
+                     f"{[cam for cam in config.topic_by_camera_name]}.")
   color_ranges = {}
   for name in _PROPS.value:
     prop = blob_tracker_object_defs.Props(name.lower())
@@ -70,18 +72,21 @@ def main(_):
       color_ranges=color_ranges,
       scale=config.scale,
       min_area=config.min_area,
-      mask_points=config.masks[_CAMERA.value],
+      mask_points=config.mask_by_camera_name[_CAMERA.value],
       visualize=_VISUALISE.value,
-      toolkit=_TOOLKIT.value)
+      toolkit=_TOOLKIT.value,
+  )
   ros_node = detector_node.DetectorNode(
-      namespace=namespace,
+      topic=topic,
       detector=detector,
       input_queue_size=config.input_queue_size,
-      output_queue_size=config.output_queue_size)
+      output_queue_size=config.output_queue_size,
+  )
 
   logging.info("Spinning ROS node.")
   ros_node.spin()
   logging.info("ROS node terminated.")
+  ros_node.close()
 
 
 if __name__ == "__main__":

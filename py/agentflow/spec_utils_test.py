@@ -16,7 +16,6 @@
 """Tests for dm_robotics.agentflow.spec_utils."""
 
 import copy
-from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -38,12 +37,6 @@ valid_value = testing_functions.valid_value
 
 
 class ValidationTest(parameterized.TestCase):
-
-  def setUp(self):
-    super(ValidationTest, self).setUp()
-    patcher = mock.patch.object(spec_utils, 'debugging_flag', return_value=True)
-    self.mock_sum = patcher.start()
-    self.addCleanup(patcher.stop)
 
   def assert_invalid_observation(self, spec, value, msg_substring=None):
     try:
@@ -75,6 +68,27 @@ class ValidationTest(parameterized.TestCase):
       self.fail('Expected exception')
     except ValueError as expected:
       del expected
+
+  def test_StringArray(self):
+    test_string = 'test string'
+    spec = specs.StringArray(shape=(), string_type=str, name='foo')
+    spec_utils.validate(
+        spec, test_string, ignore_nan=False, ignore_ranges=False)
+
+    with self.assertRaises(ValueError):
+      spec_utils.validate(
+          spec,
+          test_string.encode('ASCII'),
+          ignore_nan=False,
+          ignore_ranges=False)
+
+    # Test that StringArray is amenable to maximum/minimum. This is not of
+    # obvious utility, but arises due to the occasional need to derive a spec
+    # from a sample value, e.g. in AddObservation.
+    string_minimum = spec_utils.minimum(spec)
+    string_maximum = spec_utils.maximum(spec)
+    spec.validate(string_minimum)
+    spec.validate(string_maximum)
 
   def test_NoneAlwaysAccepted(self):
     spec_utils.validate(

@@ -70,12 +70,11 @@ class Cartesian6dToJointVelocityMapper {
   // Initialization parameters for Cartesian6dToJointVelocityMapper.
   //
   // The caller retains ownership of lib and model.
-  // It is the caller's responsibility to ensure that the *lib object has been
-  // activated through a valid MuJoCo license, and to ensure that the *lib and
-  // *model objects outlive any Cartesian6dToJointVelocityMapper instances
-  // created with this object.
+  // It is the caller's responsibility to ensure the *lib and *model objects
+  // outlive any Cartesian6dToJointVelocityMapper instances created with this
+  // object.
   struct Parameters {
-    // Pointer to an activated MjLib object.
+    // Pointer to an MjLib object.
     const MjLib* lib;
 
     // Pointer to a MuJoCo model.
@@ -268,6 +267,12 @@ class Cartesian6dToJointVelocityMapper {
     // decrease the accuracy of the Cartesian velocity by `solution_tolerance` +
     // `nullspace_projection_slack`.
     double nullspace_projection_slack = 1.0e-4;
+
+    // If `true`, the internal LSQP solver will use an adaptive step size when
+    // solving the resultant QP problem. Note that setting this to `true` can
+    // greatly speed up the convergence of the algorithm, but the solution will
+    // no longer be numerically deterministic.
+    bool use_adaptive_step_size = false;
 
     // If `true`, a warning will be logged if the internal LSQP solver is unable
     // to solve the nullspace optimization problem (second hierarchy). Ignored

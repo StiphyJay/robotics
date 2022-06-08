@@ -134,11 +134,11 @@ class Camera(Prop):
       mjcf_root: The root element of the MJCF model.
       camera_element: Name of the camera MJCF element.
       prop_root: Name of the prop root body MJCF element.
-      width: Width of the camera image
-      height: Height of the camera image
+      width: Width of the camera image.
+      height: Height of the camera image.
       fovy: Field of view, in degrees.
     """
-    super(Camera, self)._build(name, mjcf_root, prop_root)
+    super()._build(name, mjcf_root, prop_root)
 
     self._camera_element = camera_element
     self._width = width

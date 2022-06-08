@@ -18,9 +18,16 @@ project(dmr_mujoco
   VERSION 0.1
 )
 
+# Pick up the version of mujoco to use from the environment,
+# with an appropriate default if unset.
+set(MUJOCO_VERSION $ENV{MUJOCO_VERSION} CACHE STRING "Mujoco library version")
+if(NOT MUJOCO_VERSION)
+    set(MUJOCO_VERSION "2.1.3")
+endif()
+message ("MUJOCO_VERSION: ${MUJOCO_VERSION}")
+
 # Generate defs.h from configuration with the MuJoCo constants.
-set(DMR_MUJOCO_KEY_PATH "$ENV{HOME}/.mujoco/mjkey.txt" CACHE STRING "Path to the MuJoCo license key.")
-set(DMR_MUJOCO_LIB_NOGL_PATH "$ENV{HOME}/.mujoco/mujoco200_linux/bin/libmujoco200nogl.so" CACHE STRING "Path to the MuJoCo shared library (`libmujoco200nogl.so`)")
+set(DMR_MUJOCO_LIB_NOGL_PATH "$ENV{HOME}/.mujoco/mujoco-${MUJOCO_VERSION}/lib/libmujoco_nogl.so" CACHE STRING "Path to the MuJoCo shared library (`libmujoco_nogl.so`)")
 set(DMR_DMCONTROL_SUITE_PATH "$ENV{HOME}/.local/lib/python3.8/site-packages/dm_control/suite" CACHE STRING "Path to `dm_control.suite`")
 set(DMR_DMCONTROL_SUITE_HUMANOID_XML_PATH "${DMR_DMCONTROL_SUITE_PATH}/humanoid.xml")
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/defs.h.in
@@ -45,7 +52,7 @@ target_include_directories(dmr_mujoco
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
-    $<BUILD_INTERFACE:$ENV{HOME}/.mujoco/mujoco200_linux/include>
+    $<BUILD_INTERFACE:$ENV{HOME}/.mujoco/mujoco-${MUJOCO_VERSION}/include>
 )
 target_link_libraries(dmr_mujoco
   PUBLIC

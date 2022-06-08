@@ -14,7 +14,7 @@
 
 """Effectors that constrain actions to joint limits or Cartesian bounds."""
 
-from typing import Callable, Optional
+from typing import Callable, Optional, TypeVar, Generic
 
 from dm_control import mjcf
 from dm_env import specs
@@ -38,8 +38,10 @@ _Command = np.ndarray
 # are outside the limits.
 _StateValidityChecker = Callable[[_State, _StateLimits, _Command], np.ndarray]
 
+T = TypeVar('T', bound=effector.Effector)
 
-class ConstrainedActionEffector(effector.Effector):
+
+class ConstrainedActionEffector(effector.Effector, Generic[T]):
   """Effector wrapper that limits certain DOFs based on their state.
 
   For instance, if you want to limit a joint torque command based on whether
@@ -60,7 +62,7 @@ class ConstrainedActionEffector(effector.Effector):
 
   def __init__(
       self,
-      delegate: effector.Effector,
+      delegate: T,
       min_limits: np.ndarray,
       max_limits: np.ndarray,
       state_getter: Callable[[mjcf.Physics], np.ndarray],
@@ -106,8 +108,9 @@ class ConstrainedActionEffector(effector.Effector):
     self._max_state_checker = (max_state_checker or
                                self._default_max_state_checker)
 
-  def after_compile(self, mjcf_model: mjcf.RootElement) -> None:
-    self._delegate.after_compile(mjcf_model)
+  def after_compile(self, mjcf_model: mjcf.RootElement,
+                    physics: mjcf.Physics) -> None:
+    self._delegate.after_compile(mjcf_model, physics)
 
   def initialize_episode(self, physics, random_state) -> None:
     self._delegate.initialize_episode(physics, random_state)
@@ -122,6 +125,11 @@ class ConstrainedActionEffector(effector.Effector):
     return self._delegate.action_spec(physics)
 
   def set_control(self, physics: mjcf.Physics, command: np.ndarray) -> None:
+    constrained_action = self._get_contstrained_action(physics, command)
+    self._delegate.set_control(physics, constrained_action)
+
+  def _get_contstrained_action(
+      self, physics: mjcf.Physics, command: np.ndarray) -> np.ndarray:
     # Limit any DOFs whose state falls outside the provided limits.
     constrained_action = command[:]
     state = self._get_state(physics)
@@ -129,7 +137,11 @@ class ConstrainedActionEffector(effector.Effector):
         self._min_state_checker(state, self._min_limits, command)] = 0.
     constrained_action[
         self._max_state_checker(state, self._max_limits, command)] = 0.
-    self._delegate.set_control(physics, constrained_action)
+    return constrained_action
+
+  @property
+  def delegate(self) -> T:
+    return self._delegate
 
   @property
   def prefix(self) -> str:

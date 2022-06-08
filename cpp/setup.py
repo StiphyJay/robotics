@@ -51,8 +51,14 @@ class CMakeBuild(build_ext):
         "-DDMR_PYTHON_VERSION={}.{}".format(sys.version_info.major,
                                             sys.version_info.minor),
         "-DCMAKE_BUILD_TYPE={}".format(build_type),
+        "-DDM_ROBOTICS_BUILD_TESTS=OFF",
+        "-DDM_ROBOTICS_BUILD_WHEEL=True",
         "--log-level=VERBOSE",
     ]
+
+    version_script = os.environ.get("DM_ROBOTICS_VERSION_SCRIPT", None)
+    if version_script:
+      cmake_args.append(f"-DDM_ROBOTICS_VERSION_SCRIPT={version_script}",)
 
     build_args = []
     if "CMAKE_BUILD_PARALLEL_LEVEL" not in os.environ:
@@ -97,11 +103,15 @@ setup(
     name="dm_robotics-controllers",
     package_dir={"dm_robotics.controllers": ""},
     packages=["dm_robotics.controllers"],
-    version="0.0.1rc1",
+    version="0.4.0",
+    license="Apache 2.0",
     author="DeepMind",
-    description="DESC",
+    description="Python bindings for dm_robotics/cpp/controllers",
     long_description=open("controllers_py/README.md").read(),
     long_description_content_type="text/markdown",
+    url="https://github.com/deepmind/dm_robotics/tree/main/cpp/controllers_py",
+    python_requires=">=3.7, <3.10",
+    setup_requires=["wheel >= 0.31.0"],
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Programming Language :: Python :: 3",

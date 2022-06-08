@@ -21,6 +21,10 @@ import numpy as np
 import six
 
 
+SamplePoseFn = Callable[[np.random.RandomState, Optional[geometry.Physics]],
+                        Tuple[np.ndarray, np.ndarray]]
+
+
 class Distribution(six.with_metaclass(abc.ABCMeta, object)):
   """A basic interface for probability distributions."""
 
@@ -68,7 +72,7 @@ class PoseStampedDistribution(PoseDistribution):
   """A PoseDistribution allowing parameterization relative to other frames."""
 
   def __init__(self, pose_dist: 'PoseDistribution', frame: geometry.Frame):
-    super(PoseStampedDistribution, self).__init__()
+    super().__init__()
     self._pose_dist = pose_dist
     self._frame = frame
 
@@ -112,7 +116,7 @@ class CompositePoseDistribution(PoseDistribution):
   """A PoseDistribution composed of a pose and a quaternion distribution."""
 
   def __init__(self, pos_dist: Distribution, quat_dist: Distribution):
-    super(CompositePoseDistribution, self).__init__()
+    super().__init__()
     self._pos_dist = pos_dist
     self._quat_dist = quat_dist
 
@@ -175,7 +179,7 @@ class ConstantPoseDistribution(PoseDistribution):
     Args:
       pose: a 6D list composed of 3D pose and 3D euler angle.
     """
-    super(ConstantPoseDistribution, self).__init__()
+    super().__init__()
     self._pos = pose[:3]
     self._quat = tr.euler_to_quat(pose[3:], ordering='XYZ')
 
@@ -199,9 +203,7 @@ class ConstantPoseDistribution(PoseDistribution):
 class LambdaPoseDistribution(PoseDistribution):
   """A distribution the samples using given lambdas."""
 
-  def __init__(self, sample_pose_fn: Callable[
-      [np.random.RandomState, Optional[geometry.Physics]], Tuple[np.ndarray,
-                                                                 np.ndarray]],
+  def __init__(self, sample_pose_fn: SamplePoseFn,
                mean_pose_fn: Callable[[Optional[geometry.Physics]],
                                       Tuple[np.ndarray, np.ndarray]]):
     """Constructor.
@@ -210,7 +212,7 @@ class LambdaPoseDistribution(PoseDistribution):
       sample_pose_fn: a callable for obtaining a sample pose.
       mean_pose_fn: a callable for obtaining the mean of sampled poses.
     """
-    super(LambdaPoseDistribution, self).__init__()
+    super().__init__()
 
     self._sample_pose_fn = sample_pose_fn
     self._mean_pose_fn = mean_pose_fn
@@ -240,7 +242,7 @@ class WeightedDiscretePoseDistribution(PoseDistribution):
         is relative (i.e. does not need to be normalized), and the pose 6D array
         composed of 3D pose and 3D euler angle.
     """
-    super(WeightedDiscretePoseDistribution, self).__init__()
+    super().__init__()
     self._poses = [pose for _, pose in weighted_poses]
     self._weights = np.array([weight for weight, _ in weighted_poses])
     self._weights /= np.sum(self._weights)
@@ -273,14 +275,15 @@ class WeightedDiscretePoseDistribution(PoseDistribution):
 class UniformPoseDistribution(PoseDistribution):
   """Distribution of uniformly distributed poses in a given range."""
 
-  def __init__(self, min_pose_bounds, max_pose_bounds):
+  def __init__(self, min_pose_bounds: Sequence[float],
+               max_pose_bounds: Sequence[float]):
     """Constructor.
 
     Args:
       min_pose_bounds: a 6D list composed of 3D pose and 3D euler angle.
       max_pose_bounds: a 6D list composed of 3D pose and 3D euler angle.
     """
-    super(UniformPoseDistribution, self).__init__()
+    super().__init__()
     self._min_pose_bounds = np.array(min_pose_bounds)
     self._max_pose_bounds = np.array(max_pose_bounds)
 
@@ -308,6 +311,103 @@ class UniformPoseDistribution(PoseDistribution):
     return mean_pos, mean_quat
 
 
+def _points_to_pose(
+    to_pos: np.ndarray,
+    from_pos: np.ndarray,
+    y_hint: Optional[np.ndarray] = None,
+    extra_quat: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
+  """Computes pose at `from_pos` s.t. z-axis is pointing towards `to_pos`."""
+  if y_hint is None:
+    y_hint = np.array([0., 1., 0.])
+  else:
+    y_hint = y_hint / np.linalg.norm(y_hint)
+
+  view_dir = to_pos - from_pos
+  view_dir /= np.linalg.norm(view_dir)
+
+  # Build right-handed coordinate system with z-axis towards target, and x-axis
+  # orthogonal to y-axis hint.
+  z = view_dir
+  x = np.cross(y_hint, z)
+  y = np.cross(z, x)
+  rmat = np.stack([x, y, z], axis=1)
+  rmat = rmat / np.linalg.norm(rmat, axis=0)
+  quat = tr.axisangle_to_quat(tr.rmat_to_axisangle(rmat))
+
+  if extra_quat is not None:
+    quat = tr.quat_mul(quat, extra_quat)
+
+  return from_pos, quat
+
+
+class LookAtPoseDistribution(PoseDistribution):
+  """Distribution looking from a view-point to a target-point."""
+
+  def __init__(self,
+               look_at: Distribution,
+               look_from: Distribution,
+               y_hint: Optional[Union[np.ndarray, Callable[[],
+                                                           np.ndarray]]] = None,
+               extra_quat: Optional[np.ndarray] = None):
+    """Initialize LookAtPoseDistribution.
+
+    This distribution returns poses centered at `look_from` and with the +z-axis
+    pointing towards `look_at`. It is parameterized by two distributions over
+    points, and accepts a user-provided constraint for the remaining degree-of-
+    freedom around the z-axis.
+
+    Args:
+      look_at: A `Distribution` over the 3D point to look at.
+      look_from: A `Distribution` over the 3D point to look from.
+      y_hint: Optional array or callable returning 3-vector to cross with the
+        looking direction to produce the x-axis of the sampled pose. This is
+        required because the full pose is under-constrained given only
+        `from` and `to` points, so rather than baking in a solution we expose
+        this to the user as a "hint". This can be anything, but the motivating
+        examples are:
+          1) Maintaining a fixed pose as the object moves -- pass the y-axis of
+             object's current pose.
+          2) Minimizing the difference w.r.t. the current (wrist-mounted) camera
+             pose -- pass the y-axis of TCP's current pose.
+        Failure to do either of these will result in a "rolling" behavior along
+        the z-axis as the object or robot moves.
+      extra_quat: Optional quaternion [w, i, j, k] to apply as a final rotation
+        after solving for the viewing direction. If omitted, the z-axis will
+        point towards `look_at`, and the x-axis will be orthogonal to `y_hint`.
+    """
+    super().__init__()
+    self._look_at = look_at
+    self._look_from = look_from
+    self._extra_quat = extra_quat
+
+    if y_hint is None:
+      self._y_hint = np.array([0., 1., 0.])
+    elif isinstance(y_hint, np.ndarray):
+      self._y_hint = y_hint / np.linalg.norm(y_hint)
+    else:
+      self._y_hint = y_hint
+
+  def sample_pose(
+      self,
+      random_state: np.random.RandomState,
+      physics: Optional[geometry.Physics] = None
+  ) -> Tuple[np.ndarray, np.ndarray]:
+    del physics
+    look_at = self._look_at.sample(random_state)
+    look_from = self._look_from.sample(random_state)
+    y_hint = self._y_hint() if callable(self._y_hint) else self._y_hint
+    return _points_to_pose(look_at, look_from, y_hint, self._extra_quat)
+
+  def mean_pose(
+      self,
+      physics: Optional[geometry.Physics] = None
+  ) -> Tuple[np.ndarray, np.ndarray]:
+    del physics
+    look_at = self._look_at.mean()
+    look_from = self._look_from.mean()
+    return _points_to_pose(look_at, look_from, self._y_hint, self._extra_quat)
+
+
 class DomePoseDistribution(PoseDistribution):
   """Distribution within a dome (half sphere with a thickness).
 
@@ -325,7 +425,7 @@ class DomePoseDistribution(PoseDistribution):
       r_max: Maximum radius.
       theta_max: Maximum polar angle
     """
-    super(DomePoseDistribution, self).__init__()
+    super().__init__()
     self._center = center
     self._r_min = r_min
     self._r_max = r_max
@@ -398,6 +498,31 @@ def _sample_with_limits(random_state: np.random.RandomState,
   return samp
 
 
+class UniformDistribution(Distribution):
+  """Generic Uniform Distribution wrapping `numpy.random.uniform`."""
+
+  def __init__(self,
+               low: Union[float, Sequence[float]] = 0.,
+               high: Union[float, Sequence[float]] = 1.):
+    """Constructor.
+
+    Args:
+      low: Lower boundary of the output interval. All values generated will be
+        greater than or equal to low. The default value is 0.
+      high: Upper boundary of the output interval. All values generated will be
+        less than or equal to high. The default value is 1.0.
+    """
+    super().__init__()
+    self._low = np.array(low)
+    self._high = np.array(high)
+
+  def sample(self, random_state: np.random.RandomState) -> np.ndarray:
+    return random_state.uniform(self._low, self._high)
+
+  def mean(self) -> np.ndarray:
+    return self._low + (self._high - self._low) / 2.
+
+
 class TruncatedNormal(Distribution):
   """Generic Truncated Normal Distribution."""
 
@@ -410,7 +535,7 @@ class TruncatedNormal(Distribution):
       clip_sd: (float) Scalar threshold on standard-deviation. Values larger
         than this will be re-sampled.
     """
-    super(TruncatedNormal, self).__init__()
+    super().__init__()
     self._mean = np.array(mean, dtype=np.float)
     self._sd = np.array(sd, dtype=np.float)
     self._clip_sd = clip_sd
@@ -447,7 +572,7 @@ class TruncatedNormalQuaternion(TruncatedNormal):
       clip_sd: (float) Scalar threshold on standard-deviation. Values larger
         than this will be re-sampled.
     """
-    super(TruncatedNormalQuaternion, self).__init__(mean, sd, clip_sd)
+    super().__init__(mean, sd, clip_sd)
     if len(mean) == 3:
       self._mean = tr.axisangle_to_quat(mean)
 

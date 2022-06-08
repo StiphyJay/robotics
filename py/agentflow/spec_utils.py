@@ -20,7 +20,6 @@ subclass `BoundedArray`.
 
 from typing import Any, Mapping, Optional, Sequence, Tuple, Type, TypeVar
 
-from absl import flags
 from absl import logging
 import dm_env
 from dm_env import specs
@@ -28,23 +27,10 @@ import numpy as np
 
 # Internal profiling
 
-FLAGS = flags.FLAGS
-
-# Defaulting to True, to prefer failing fast and closer to the bug.
-flags.DEFINE_boolean('debug_specs', True,
-                     'Debugging switch for checking values match specs.')
-flags.DEFINE_integer('max_validations', 1000,
-                     'Stop validating after this many calls.')
-
-_validation_count = 0
 
 ObservationSpec = Mapping[str, specs.Array]
 ObservationValue = Mapping[str, np.ndarray]
 ScalarOrArray = TypeVar('ScalarOrArray', np.floating, np.ndarray)
-
-
-def debugging_flag() -> bool:
-  return FLAGS.debug_specs
 
 
 class TimeStepSpec(object):
@@ -135,6 +121,8 @@ def minimum(spec: specs.Array):
     return clip(np.asarray(spec.minimum, dtype=spec.dtype), spec)
   elif np.issubdtype(spec.dtype, np.integer):
     return np.full(spec.shape, np.iinfo(spec.dtype).min)
+  elif isinstance(spec, specs.StringArray):
+    return np.full(spec.shape, spec.string_type(''), dtype=object)
   else:
     return np.full(spec.shape, np.finfo(spec.dtype).min)
 
@@ -144,6 +132,8 @@ def maximum(spec: specs.Array):
     return clip(np.asarray(spec.maximum, dtype=spec.dtype), spec)
   elif np.issubdtype(spec.dtype, np.integer):
     return np.full(spec.shape, np.iinfo(spec.dtype).max)
+  elif isinstance(spec, specs.StringArray):
+    return np.full(spec.shape, spec.string_type(''), dtype=object)
   else:
     return np.full(spec.shape, np.finfo(spec.dtype).max)
 
@@ -465,12 +455,6 @@ def validate(spec: specs.Array,
     ValueError: On a validation failure.
   """
 
-  # If only validating for debugging, and the debug flag is off, don't validate.
-  global _validation_count
-  if not debugging_flag() or _validation_count >= FLAGS.max_validations:
-    return
-  _validation_count += 1
-
   if value is None:
     return  # ASSUME this is ok.
 
@@ -497,12 +481,16 @@ def validate(spec: specs.Array,
       raise ValueError('NaN in value: {}, spec: {} ({})'.format(
           value, spec, msg))
 
-  if not ignore_ranges:
+  if not ignore_ranges or isinstance(spec, specs.StringArray):
+    # Perform full validation if user cares about range, or if a StringArray.
+    # Explanation: StringArray.validate has no range, but `validate` outputs an
+    # array with `object` dtype rather than `string_type`. Therefore it will
+    # fail the dtype check below even if it is a valid input.
     spec.validate(value)
   else:
     if spec.shape != value.shape:
       raise ValueError('shape mismatch {}. {} vs. {}'.format(msg, spec, value))
-    if value.dtype != value.dtype:
+    if spec.dtype != value.dtype:
       raise ValueError('dtype mismatch {}. {} vs. {}'.format(msg, spec, value))
 
 

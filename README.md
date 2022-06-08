@@ -1,5 +1,4 @@
-# DeepMind Robotics
-Libraries, tools and tasks created and used at DeepMind Robotics.
+# `dm_robotics`: Libraries, tools, and tasks created and used for Robotics research at DeepMind.
 
 ## Package overview
 | Package | Summary |
@@ -26,6 +25,7 @@ These libraries are distributed on PyPI, the packages are:
 *  `dm_robotics-moma`
 *  `dm_robotics-controllers`
 
+Python versions 3.7, 3.8 and 3.9 are supported.
 
 ## Dependencies
 `MoMa`, `Manipulation` and `Controllers` depend on MuJoCo, the other packages do not.
@@ -35,10 +35,10 @@ See the individual packages for more information on their dependencies.
 
 To build and test the libraries, run `build.sh`.  This script assumes:
 
-*  MuJoCo is installed and licensed.
-*  dm_control is installed.
+*  MuJoCo is installed.
+*  [`dm_control`](https://github.com/deepmind/dm_control) is installed.
 *  cmake version >= 3.20.2 is installed.
-*  Python 3.6 ,3.7 or 3.8 and system headers are installed.
+*  Python 3.7, 3.8 or 3.9 and system headers are installed.
 *  GCC version 9 or later is installed.
 *  numpy is installed.
 

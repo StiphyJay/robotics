@@ -11,28 +11,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """A prop originated in mesh files.
 
 A "prop" is any object within an environment which the robot can manipulate. A
 `MeshProp` allows users to use objects modeled in CAD within their Mujoco
 simulations.
 """
-import collections
 import os
-from typing import Any, Callable, List, Optional, Sequence, Union
+from typing import List, Optional, Sequence, Union
 
 from absl import logging
 from dm_control import mjcf
+from dm_robotics.manipulation.props.utils import mesh_formats_utils
 from dm_robotics.moma import prop
 
-# Internal imports.
+# Internal file import.
 
 # The default value of '1 1 1 1' has the effect of leaving the texture
 # unchanged. Refer to http://www.mujoco.org/book/XMLreference.html#material .
 DEFAULT_COLOR_RGBA = '1 1 1 1'
 MIN_MASS = 0.001
-_SUPPORTED_MESH_TYPES = ('.stl', '.msh')
+_MUJOCO_SUPPORTED_MESH_TYPES = ('.stl', '.msh')
+_MUJOCO_TEXTURE_TYPES = ('.png')
 _DEFAULT_SIZE = 0.005
 _DEFAULT_POS = 0
 _DEFAULT_FRICTION = (0.5, 0.005, 0.0001)
@@ -59,8 +59,8 @@ class MeshProp(prop.Prop):
       name = 'mesh_%s_%s_%02d' % (mesh_prefix, self.name, mesh_idx)
       if isinstance(mesh_source, str):
         logging.debug('Loading mesh file %s', mesh_source)
-        extension = os.path.splitext(mesh_source)[1]
-        if extension in _SUPPORTED_MESH_TYPES:
+        _, extension = os.path.splitext(mesh_source)
+        if extension in _MUJOCO_SUPPORTED_MESH_TYPES:
           with open(mesh_source, 'rb') as f:
             self._mjcf_root.asset.add(
                 'mesh',
@@ -68,6 +68,15 @@ class MeshProp(prop.Prop):
                 scale=self._size,
                 file=mjcf.Asset(f.read(), extension))
           mesh_idx += 1
+        elif extension == '.obj':
+          msh_strings = mesh_formats_utils.obj_file_to_mujoco_msh(mesh_source)
+          for msh_string in msh_strings:
+            self._mjcf_root.asset.add(
+                'mesh',
+                name=name,
+                scale=self._size,
+                file=mjcf.Asset(msh_string, '.msh'))
+            mesh_idx += 1
         else:
           raise ValueError(f'Unsupported object extension: {extension}')
       else:  # TODO(b/195733842): add tests.
@@ -208,51 +217,13 @@ class MeshProp(prop.Prop):
   def color(self):
     return self._visual_dclass.geom.rgba
 
-
-class Singleton(type):
-  _instances = {}
-
-  def __call__(cls, *args, **kwargs):
-    if cls not in cls._instances:
-      cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
-    return cls._instances[cls]
-
-
-class PropSetDict(dict):
-  """A dictionary that supports a function evaluation on every key access."""
-
-  def __getitem__(self, key: Any) -> Sequence[str]:
-    # The method is called during [] access.
-    return self._evaluate(dict.__getitem__(self, key))
-
-  def __repr__(self) -> str:
-    return f'{type(self).__name__}({super().__repr__()})'
-
-  def get(self, key) -> Sequence[str]:
-    return self.__getitem__(key)
-
-  def values(self):
-    values = super().values()
-    return [self._evaluate(x) for x in values]
-
-  def items(self):
-    new_dict = {k: self._evaluate(v) for k, v in super().items()}
-    return new_dict.items()
-
-  def _evaluate(
-      self,
-      sequence_or_function: Union[Sequence[str], Callable[[], Sequence[str]]]
-  ) -> Sequence[str]:
-    """Based on the type of an argument, execute different actions.
-
-    Supports sequence containers or functions that create such.
-
-    Args:
-      sequence_or_function: A sequence or a function that creates a sequence.
-    Returns:
-      A sequence of names.
-    """
-    if isinstance(sequence_or_function, collections.Sequence):
-      return sequence_or_function
-    new_sequence = sequence_or_function()
-    return new_sequence
+  @property
+  def textures(self) -> Sequence[bytes]:
+    # Extract textures from the object.
+    textures = []
+    assets = self.mjcf_model.get_assets()
+    for asset_name, asset_data in assets.items():
+      _, file_extension = os.path.splitext(asset_name)
+      if file_extension.lower() in _MUJOCO_TEXTURE_TYPES:
+        textures.append(asset_data)
+    return textures

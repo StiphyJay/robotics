@@ -11,11 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Cartesian 6D velocity (linear and angular) effector."""
 
 import dataclasses
-from typing import Optional, Sequence, Tuple
+from typing import Callable, Optional, Sequence, Tuple
 
 from absl import logging
 from dm_control import mjcf
@@ -27,6 +26,7 @@ from dm_robotics.geometry import geometry
 from dm_robotics.geometry import mujoco_physics
 from dm_robotics.moma import effector
 from dm_robotics.moma.effectors import constrained_actions_effectors
+from dm_robotics.transformations import transformations as tr
 import numpy as np
 
 _MjcfElement = mjcf.element._ElementImpl  # pylint: disable=protected-access
@@ -325,7 +325,8 @@ class Cartesian6dVelocityEffector(effector.Effector):
                model_params: ModelParams,
                control_params: ControlParams,
                collision_params: Optional[CollisionParams] = None,
-               log_nullspace_failure_warnings: bool = False):
+               log_nullspace_failure_warnings: bool = False,
+               use_adaptive_qp_step_size: bool = False):
     """Initializes a QP-based 6D Cartesian velocity effector.
 
     Args:
@@ -339,10 +340,13 @@ class Cartesian6dVelocityEffector(effector.Effector):
         controlled.
       collision_params: parameters that describe the active collision avoidance
         behaviour, if any.
-      log_nullspace_failure_warnings: if true, a warning will be logged
-        if the internal LSQP solver is unable to solve the nullspace
-        optimization problem (second hierarchy). Ignored if nullspace control is
-        disabled.
+      log_nullspace_failure_warnings: if true, a warning will be logged if the
+        internal LSQP solver is unable to solve the nullspace optimization
+        problem (second hierarchy). Ignored if nullspace control is disabled.
+      use_adaptive_qp_step_size: if true, the internal LSQP solver will use an
+        adaptive step size when solving the resultant QP problem. Note that
+        setting this to true can greatly speed up the computation time, but the
+        solution will no longer be numerically deterministic.
     """
     self._effector_prefix = f'{robot_name}_twist'
     self._joint_velocity_effector = joint_velocity_effector
@@ -352,13 +356,16 @@ class Cartesian6dVelocityEffector(effector.Effector):
     self._collision_params = collision_params
     self._control_frame = model_params.control_frame
     self._log_nullspace_failure_warnings = log_nullspace_failure_warnings
+    self._use_adaptive_step_size = use_adaptive_qp_step_size
 
     # These are created in after_compose, once the mjcf_model is finalized.
     self._qp_mapper = None
     self._qp_frame = None
     self._joints_argsort = None
 
-  def after_compile(self, mjcf_model: mjcf.RootElement) -> None:
+  def after_compile(self, mjcf_model: mjcf.RootElement,
+                    physics: mjcf.Physics) -> None:
+    self._joint_velocity_effector.after_compile(mjcf_model, physics)
     # Construct the QP-based mapper.
     qp_params = _CartesianVelocityMapperParams()
 
@@ -366,6 +373,7 @@ class Cartesian6dVelocityEffector(effector.Effector):
     self._control_params.set_qp_params(qp_params)
     if self._collision_params:
       self._collision_params.set_qp_params(qp_params)
+    qp_params.use_adaptive_step_size = self._use_adaptive_step_size
     qp_params.log_nullspace_failure_warnings = (
         self._log_nullspace_failure_warnings)
 
@@ -509,6 +517,63 @@ class Cartesian6dVelocityEffector(effector.Effector):
     return joint_velocities
 
 
+class ConstrainedCartesian6dVelocityEffector(
+    constrained_actions_effectors
+    .ConstrainedActionEffector[Cartesian6dVelocityEffector]):
+  """Effector wrapper that limits certain Cartesian DOFs based on their state.
+
+  Any command DOFs whose corresponding state surpasses the provided limits will
+  be set to 0.
+  """
+
+  def __init__(self, delegate: Cartesian6dVelocityEffector,
+               min_limits: np.ndarray, max_limits: np.ndarray,
+               state_getter: Callable[[mjcf.Physics], np.ndarray]):
+    """Constructor for ConstrainedCartesian6dVelocityEffector.
+
+    Args:
+      delegate: Unconstrained 6D velocity effector.
+      min_limits: 6D lower limits expressed in the world frame.
+      max_limits: 6D upper limits expressed in the world frame.
+      state_getter: Callable returning a state that will be compared to the
+        limits. The state getter should operate in the world frame because the
+        limits are expressed in that frame. The twist executed by this effector
+        will still happen in the delegate's control frame.
+    """
+    super().__init__(
+        delegate=delegate,
+        min_limits=min_limits,
+        max_limits=max_limits,
+        state_getter=state_getter)
+    self._delegate = delegate
+    # Lazily load the control frame with world orientation because the delegate
+    # might not have it set correctly yet.
+    self._control_frame_with_world_orientation = None
+
+  def set_control(self, physics: mjcf.Physics, command: np.ndarray) -> None:
+    # Convert the input twist to the world-oriented frame.
+    twist_control_frame = geometry.TwistStamped(
+        twist=command, frame=self._delegate.control_frame)
+    if not self._control_frame_with_world_orientation:
+      self._control_frame_with_world_orientation = geometry.HybridPoseStamped(
+          pose=None,
+          frame=self._delegate.control_frame,
+          quaternion_override=geometry.PoseStamped(None, None))
+    twist_world_orientation = twist_control_frame.to_frame(
+        frame=self._control_frame_with_world_orientation,
+        physics=mujoco_physics.wrap(physics))
+    # Constrain the action to the Cartesian workspace limits.
+    constrained_twist_world_orientation = self._get_contstrained_action(
+        physics, np.array(twist_world_orientation.twist.full))
+    # Convert the twist back to the control frame.
+    constrained_twist_control_frame = geometry.TwistStamped(
+        twist=constrained_twist_world_orientation,
+        frame=self._control_frame_with_world_orientation).to_frame(
+            self._delegate.control_frame, physics=mujoco_physics.wrap(physics))
+    self._delegate.set_control(physics,
+                               constrained_twist_control_frame.twist.full)
+
+
 def limit_to_workspace(
     cartesian_effector: Cartesian6dVelocityEffector,
     element: _MjcfElement,
@@ -524,25 +589,78 @@ def limit_to_workspace(
     cartesian_effector: 6D cartesian effector.
     element: `mjcf.Element` that defines the Cartesian frame about which the
       Cartesian velocity is defined.
-    min_workspace_limits: Lower bound of the Cartesian workspace. Must be 3D.
-    max_workspace_limits: Upper bound of the Cartesian workspace. Must be 3D.
+    min_workspace_limits: Lower bound of the Cartesian workspace. Must be 3D or
+      6D (position only or position and Euler orientation) and expressed in the
+      world frame.
+    max_workspace_limits: Upper bound of the Cartesian workspace. Must be 3D or
+      6D (position only or position and Euler orientation) and expressed in the
+      world frame.
   """
-  if len(min_workspace_limits) != 3 or len(max_workspace_limits) != 3:
-    raise ValueError('The workspace limits must be 3D (X, Y, Z). Provided '
+  if len(min_workspace_limits) != len(max_workspace_limits):
+    raise ValueError('The workspace limits must have the same size. Provided '
+                     f'min: {min_workspace_limits} and max: '
+                     f'{max_workspace_limits}')
+  if len(min_workspace_limits) != 3 and len(min_workspace_limits) != 6:
+    raise ValueError('The workspace limits must be 3D or 6D. Provided '
                      f'min: {min_workspace_limits} and max: '
                      f'{max_workspace_limits}')
 
-  def state_getter(physics):
-    pos = physics.bind(element).xpos
-    # Even when no wrist limits are provided, we need to supply a 6D state to
-    # match the action spec of the cartesian effector.
-    wrist_state = [0.0] * 3
-    return np.concatenate((pos, wrist_state))
+  if len(min_workspace_limits) == 6:
+    # To handle orientation limits, we need to find the Euler distance from the
+    # control element to a "neutral orientation" which we define as the middle
+    # of the workspace limits provided.
+    neutral_orientation_euler = ((min_workspace_limits + max_workspace_limits) /
+                                 2.)[3:6]
+    neutral_orientation_quat = tr.euler_to_quat(neutral_orientation_euler)
+    neutral_orientation_frame = geometry.HybridPoseStamped(
+        pose=None,
+        frame=element,
+        quaternion_override=geometry.PoseStamped(
+            pose=geometry.Pose(
+                position=None, quaternion=neutral_orientation_quat)))
 
-  # Provide unused wrist limits. They will be compared to a constant 0.0.
-  min_limits = np.concatenate((min_workspace_limits, [-1.] * 3))
-  max_limits = np.concatenate((max_workspace_limits, [1.] * 3))
-  return constrained_actions_effectors.ConstrainedActionEffector(
+  def state_getter(physics):
+    current_element_frame = geometry.PoseStamped(pose=None, frame=element)
+    current_element_in_world_frame = current_element_frame.to_world(
+        physics=mujoco_physics.wrap(physics))
+    if len(min_workspace_limits) == 6:
+      neutral_orientation_quat = neutral_orientation_frame.to_world(
+          physics=mujoco_physics.wrap(physics)).pose.quaternion
+      current_orientation_quat = current_element_in_world_frame.pose.quaternion
+      error_quat = tr.quat_diff_active(
+          source_quat=neutral_orientation_quat,
+          target_quat=current_orientation_quat)
+      error_euler = tr.quat_to_euler(error_quat)
+      # The "state" returned by this function doesn't need to be a Cartesian or
+      # Euler state. It simply needs to be something we can compare to the
+      # limits and actions to make sure an action is ok. The Euler error is a
+      # good proxy for this.
+      orientation_state = error_euler
+    else:
+      # When we don't have orientation limits, we can ignore this part of the
+      # state.
+      orientation_state = [0.0] * 3
+    return np.concatenate(
+        (current_element_in_world_frame.pose.position, orientation_state))
+
+  if len(min_workspace_limits) == 6:
+    # The orientation from the state-getter is already expressed relative to the
+    # "neutral frame" (the average of the min and max limits), so we can remove
+    # the average from here.
+    neutral_state = np.zeros(6)
+    neutral_state[3:6] = neutral_orientation_euler
+    min_limits = min_workspace_limits - neutral_state
+    max_limits = max_workspace_limits - neutral_state
+  else:
+    # Add dummy limits for the orientation. The state_getter() above will always
+    # return all 0's for the orientation part of the state. 0 is in [-1, 1], so
+    # combined with these limits, that means the angular part of the input twist
+    # will simply pass through. No workspace limits will be applied.
+    # The added limits need to match the state from state_getter(), which needs
+    # to match the shape of the input action.
+    min_limits = np.concatenate((min_workspace_limits, [-1.] * 3))
+    max_limits = np.concatenate((max_workspace_limits, [1.] * 3))
+  return ConstrainedCartesian6dVelocityEffector(
       delegate=cartesian_effector,
       min_limits=min_limits,
       max_limits=max_limits,

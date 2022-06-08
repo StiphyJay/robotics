@@ -15,8 +15,6 @@
 
 import setuptools
 
-_VERSION = "0.0.1rc1"
-
 
 def _get_requirements(requirements_file):  # pylint: disable=g-doc-args
   """Returns a list of dependencies for setup() from requirements.txt.
@@ -51,15 +49,18 @@ setuptools.setup(
         "dm_robotics.manipulation.props.parametric_object",
         "dm_robotics.manipulation.props.parametric_object.rgb_objects",
         "dm_robotics.manipulation.props.rgb_objects",
+        "dm_robotics.manipulation.props.utils",
         "dm_robotics.manipulation.standard_cell",
     ],
-    version=_VERSION.replace("-", ""),
+    version="0.4.0",
     license="Apache 2.0",
     author="DeepMind",
     description="Parametrically defined mesh objects",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/deepmind/dm_robotics/manipulation",
+    url="https://github.com/deepmind/dm_robotics/tree/main/py/manipulation",
+    python_requires=">=3.7, <3.10",
+    setup_requires=["wheel >= 0.31.0"],
     install_requires=(_get_requirements("requirements.txt") +
                       _get_requirements("requirements_external.txt")),
     classifiers=[

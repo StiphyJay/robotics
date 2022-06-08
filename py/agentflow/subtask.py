@@ -29,7 +29,7 @@ import numpy as np
 # Internal profiling
 
 
-class SubTask(abc.ABC):
+class SubTask(abc.ABC, core.Renderable):
   """A SubTask defines a task for subtask policies, given a parent task.
 
   SubTask is used to define learning problems for agents used inside a larger
@@ -186,9 +186,6 @@ class SubTask(abc.ABC):
     del own_arg_key
     return core.OptionResult(core.TerminationType.SUCCESS, data=None)
 
-  def render_frame(self, canvas) -> None:
-    pass
-
 
 class SubTaskObserver(abc.ABC):
   """An observer that can be attached to SubTaskOption.
@@ -201,8 +198,24 @@ class SubTaskObserver(abc.ABC):
   """
 
   @abc.abstractmethod
-  def step(self, parent_timestep: dm_env.TimeStep, parent_action: np.ndarray,
-           agent_timestep: dm_env.TimeStep, agent_action: np.ndarray) -> None:
+  def step(self, parent_timestep: dm_env.TimeStep,
+           parent_action: Optional[np.ndarray], agent_timestep: dm_env.TimeStep,
+           agent_action: Optional[np.ndarray]) -> None:
+    """Steps the observer.
+
+    The relationship between the timestep and action is the action is a response
+    to the timestep.
+
+    Args:
+      parent_timestep: The timestep output by the underlying base task, prior
+        to any TimestepPreprocessors being applied.
+      parent_action: The agent action as seen by the base task. A None action is
+        given if the agent timestep is a LAST timestep.
+      agent_timestep: The timestep seen by the agent, proir to any
+        TimestepPreprocessors being applied.
+      agent_action: The action output by the agent. A None action is given if
+        the agent timestep is a LAST timestep.
+    """
     pass
 
 
@@ -232,7 +245,7 @@ class SubTaskOption(core.Option):
       observers: Observers to invoke from step after actions are determined.
       name: An arbitrary name for the resulting Option.
     """
-    super(SubTaskOption, self).__init__(name=name)
+    super().__init__(name=name)
     self._task = sub_task
     self._agent = agent
     self._observers = []

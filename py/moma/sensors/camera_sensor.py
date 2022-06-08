@@ -14,18 +14,24 @@
 
 """Sensor for gathering pose and image observations from mjcf cameras."""
 
+import dataclasses
 import enum
 from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
 
 from absl import logging
-import dataclasses
 from dm_control import mjcf
+from dm_control import mujoco
 from dm_control.composer.observation import observable
+from dm_control.mujoco.wrapper.mjbindings import enums
 from dm_robotics.moma import sensor as moma_sensor
 from dm_robotics.transformations import transformations as tr
 import numpy as np
 
 CameraSensorBundle = Tuple['CameraPoseSensor', 'CameraImageSensor']
+
+# A quatenion representing a rotation from the mujoco camera, which has the -z
+# axis towards the scene, to the opencv camera, which has +z towards the scene.
+_OPENGL_TO_OPENCV_CAM_QUAT = np.array([0., 1., 0., 0.])
 
 
 @enum.unique
@@ -35,6 +41,8 @@ class PoseObservations(enum.Enum):
   POS = '{}_pos'
   # The orientation of the camera.
   QUAT = '{}_quat'
+  # The full pose of the camera, as 7-dim posquat.
+  POSE = '{}_pose'
 
   def get_obs_key(self, name: str) -> str:
     """Returns the key to the observation in the observables dict."""
@@ -48,6 +56,8 @@ class ImageObservations(enum.Enum):
   RGB_IMAGE = '{}_rgb_img'
   # The depth image sensed by the camera.
   DEPTH_IMAGE = '{}_depth_img'
+  # The segmentation image sensed by the camera.
+  SEGMENTATION_IMAGE = '{}_segmentation_img'
   # The intrinsics of the cameras.
   INTRINSICS = '{}_intrinsics'
 
@@ -70,12 +80,21 @@ class CameraConfig:
         `_get_instrinsics`).
     has_rgb: Is the camera producing rgb channels.
     has_depth: Is the camera producing a depth channel.
+    has_segmentation: Is the camera producing a segmentation image. If `True`,
+      adds a 2-channel NumPy int32 array of label values where the pixels of
+      each object are labeled with the pair (mjModel ID, mjtObj object_type).
+      Background pixels are labeled (-1, -1)
+    render_shadows: If true the camera will render the shadows of the scene.
+      Note that when using CPU for rendering, shadow rendering increases
+      significantly the amount of processing time.
   """
   width: int = 128
   height: int = 128
   fovy: float = 90.0
   has_rgb: bool = True
   has_depth: bool = False
+  has_segmentation: bool = False
+  render_shadows: bool = False
 
 
 class CameraPoseSensor(moma_sensor.Sensor):
@@ -96,6 +115,8 @@ class CameraPoseSensor(moma_sensor.Sensor):
             observable.Generic(self._camera_pos),
         self.get_obs_key(PoseObservations.QUAT):
             observable.Generic(self._camera_quat),
+        self.get_obs_key(PoseObservations.POSE):
+            observable.Generic(self._camera_pose),
     }
 
     for obs in self._observables.values():
@@ -120,7 +141,16 @@ class CameraPoseSensor(moma_sensor.Sensor):
     return physics.bind(self.element).xpos  # pytype: disable=attribute-error
 
   def _camera_quat(self, physics: mjcf.Physics) -> np.ndarray:
-    return tr.mat_to_quat(np.reshape(physics.bind(self.element).xmat, [3, 3]))  # pytype: disable=attribute-error
+    # Rotate the camera to have +z towards the scene to be consistent with
+    # real-robot camera calibration.
+    mujoco_cam_quat = tr.mat_to_quat(
+        np.reshape(physics.bind(self.element).xmat, (3, 3)))  # pytype: disable=attribute-error
+    return tr.quat_mul(mujoco_cam_quat, _OPENGL_TO_OPENCV_CAM_QUAT)
+
+  def _camera_pose(self, physics: mjcf.Physics) -> np.ndarray:
+    # TODO(jscholz): rendundant with pos & quat; remove pos & quat?
+    return np.concatenate(
+        (self._camera_pos(physics), self._camera_quat(physics)), axis=-1)
 
 
 class CameraImageSensor(moma_sensor.Sensor):
@@ -138,6 +168,7 @@ class CameraImageSensor(moma_sensor.Sensor):
     self.element = camera_element
     self._cfg = config
     self._name = name
+    self._camera: Optional[mujoco.Camera] = None
 
     self._observables = {
         self.get_obs_key(ImageObservations.INTRINSICS):
@@ -151,6 +182,10 @@ class CameraImageSensor(moma_sensor.Sensor):
       self._observables[self.get_obs_key(
           ImageObservations.DEPTH_IMAGE)] = observable.Generic(
               self._camera_depth)
+    if self._cfg.has_segmentation:
+      self._observables[self.get_obs_key(
+          ImageObservations.SEGMENTATION_IMAGE)] = observable.Generic(
+              self._camera_segmentation)
 
     for obs in self._observables.values():
       obs.enabled = True
@@ -158,6 +193,13 @@ class CameraImageSensor(moma_sensor.Sensor):
   def initialize_episode(self, physics: mjcf.Physics,
                          random_state: np.random.RandomState) -> None:
     pass
+
+  def after_compile(self, mjcf_model: mjcf.RootElement,
+                    physics: mjcf.Physics) -> None:
+    # We create the camera at the beginning of every episode. This is to improve
+    # speed of rendering. Previously we used `physics.render` which creates a
+    # new camera every single time you render.
+    self._create_camera(physics)
 
   @property
   def observables(self) -> Dict[str, observable.Observable]:
@@ -171,32 +213,74 @@ class CameraImageSensor(moma_sensor.Sensor):
     return obs.get_obs_key(self._name)
 
   def _camera_intrinsics(self, physics: mjcf.Physics) -> np.ndarray:
-    # Calculate the focal length to get the requested image height given the
-    # field of view. For more details see:
-    # https://en.wikipedia.org/wiki/Pinhole_camera_model
-    half_angle = self._cfg.fovy / 2
-    half_angle_rad = half_angle * np.pi / 180
-    focal_len = self._cfg.height / 2 / np.tan(half_angle_rad)
-
-    return np.array([[focal_len, 0, (self._cfg.height - 1) / 2, 0],
-                     [0, focal_len, (self._cfg.height - 1) / 2, 0],
-                     [0, 0, 1, 0]])
+    del physics  # unused.
+    return pinhole_intrinsics(
+        img_shape=(self._cfg.height, self._cfg.width), fovy=self._cfg.fovy)
 
   def _camera_rgb(self, physics: mjcf.Physics) -> np.ndarray:
-    return np.atleast_3d(
-        physics.render(
-            height=self._cfg.height,
-            width=self._cfg.width,
-            camera_id=self.element.full_identifier,  # pytype: disable=attribute-error
-            depth=False))
+    return np.atleast_3d(self._camera.render(depth=False, segmentation=False))
 
   def _camera_depth(self, physics: mjcf.Physics) -> np.ndarray:
-    return np.atleast_3d(
-        physics.render(
-            height=self._cfg.height,
-            width=self._cfg.width,
-            camera_id=self.element.full_identifier,  # pytype: disable=attribute-error
-            depth=True))
+    return np.atleast_3d(self._camera.render(depth=True))
+
+  def _camera_segmentation(self, physics: mjcf.Physics) -> np.ndarray:
+    return np.atleast_3d(self._camera.render(segmentation=True))
+
+  def _create_camera(self, physics: mjcf.Physics) -> None:
+    self._camera = mujoco.Camera(
+        physics=physics,
+        height=self._cfg.height,
+        width=self._cfg.width,
+        camera_id=self.element.full_identifier)
+    if self._cfg.render_shadows:
+      self._camera.scene.flags[enums.mjtRndFlag.mjRND_SHADOW] = 1
+    else:
+      self._camera.scene.flags[enums.mjtRndFlag.mjRND_SHADOW] = 0
+
+
+def pinhole_intrinsics(img_shape: Tuple[int, int],
+                       fovy: float,
+                       negate_x_focal_len: bool = False) -> np.ndarray:
+  """Builds camera intrinsic matrix for simple pinhole model.
+
+  This function returns a camera intrinsic matrix for projecting 3D camera-
+  frame points to the image plane.
+
+  For background see:
+  https://en.wikipedia.org/wiki/Pinhole_camera_model
+
+  Args:
+    img_shape: (2,) array containing image height and width.
+    fovy: Field-of-view in Y, in degrees.
+    negate_x_focal_len: If True, negate the X focal_len following mujoco's -z
+      convention. This matrix will be identical to mujoco's camera intrinsics,
+      but will be inconsistent with the +z-towards-scene achieved by
+      CameraPoseSensor.
+
+  Returns:
+    (3, 4) array containing camera intrinsics
+  """
+  height, width = img_shape
+
+  # Calculate the focal length to get the requested image height given the
+  # field of view.
+  half_angle = fovy / 2
+  half_angle_rad = half_angle * np.pi / 180
+  focal_len = height / 2 / np.tan(half_angle_rad)
+
+  # Note: By default these intrinsics do not include the negation of the x-
+  # focal-length that mujoco uses in its camera matrix. To utilize this camera
+  # matrix for projection and back-projection you must rotate the camera xmat
+  # from mujoco by 180- degrees around the Y-axis. This is performed by
+  # CameraPoseSensor.
+  #
+  # Background: Mujoco cameras view along the -z-axis, and require fovx and
+  # depth-negation to do reprojection. This camera matrix follows the OpenCV
+  # convention of viewing along +z, which does not require these hacks.
+  x_focal_len = -focal_len if negate_x_focal_len else focal_len
+  return np.array([[x_focal_len, 0, (width - 1) / 2, 0],
+                   [0, focal_len, (height - 1) / 2, 0],
+                   [0, 0, 1, 0]])
 
 
 def get_sensor_bundle(

@@ -56,13 +56,15 @@ setuptools.setup(
         "dm_robotics.moma.models.end_effectors.wrist_sensors",
         "dm_robotics.moma.models.robots.robot_arms",
     ],
-    version="0.0.1rc1",
+    version="0.4.0",
     license="Apache 2.0",
     author="DeepMind",
     description="Tools for authoring robotic manipulation tasks.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/deepmind/dm_robotics/moma",
+    url="https://github.com/deepmind/dm_robotics/tree/main/py/moma",
+    python_requires=">=3.7, <3.10",
+    setup_requires=["wheel >= 0.31.0"],
     install_requires=(_get_requirements("requirements.txt") +
                       _get_requirements("requirements_external.txt")),
     classifiers=[
@@ -75,5 +77,4 @@ setuptools.setup(
         "Topic :: Scientific/Engineering :: Mathematics",
     ],
     zip_safe=True,
-    include_package_data=True
-)
+    include_package_data=True)

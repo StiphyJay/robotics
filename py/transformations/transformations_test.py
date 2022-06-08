@@ -51,7 +51,7 @@ def _force_transform_kdl(ht, w):
 class TransformationsTest(parameterized.TestCase):
 
   def __init__(self, *args, **kwargs):
-    super(TransformationsTest, self).__init__(*args, **kwargs)
+    super().__init__(*args, **kwargs)
     self._random_state = np.random.RandomState()
 
   @parameterized.parameters(
@@ -108,12 +108,55 @@ class TransformationsTest(parameterized.TestCase):
     np.testing.assert_allclose(mat[0:3, 0:3], truemat, atol=1e-7)
 
   @parameterized.parameters(
-      {'twist': [1, 0, 0, 0, 0, 0],
-       'cfg': (0, 0, 0, np.radians(0), np.radians(90), np.radians(0))},
-
-      {'twist': [1, 2, 3, -3, 2, -1],
-       'cfg': (-1, 2, 3, np.radians(30), np.radians(60), np.radians(90))}
+      {
+          'pos': [0.34243, -0.8763, 0.01273],
+          'quat': [-0.41473841, 0.59483601, -0.45089078, 0.52044181],
+          'hmat':
+              np.array([[0.05167565, -0.10471773, 0.99315851, 0.34243],
+                        [-0.96810656, -0.24937912, 0.02407785, -0.8763],
+                        [0.24515162, -0.96272751, -0.114264750, 0.01273],
+                        [0.0, 0.0, 0.0, 1.0]])
+      },
+      {
+          'pos': [1.693, 0.9734, -2.7178],
+          'quat': [0.08769298, 0.69897558, 0.02516888, 0.7093022],
+          'hmat':
+              np.array([[-0.00748615, -0.08921678, 0.9959841, 1.693],
+                        [0.15958651, -0.98335294, -0.08688582, 0.9734],
+                        [0.98715556, 0.15829519, 0.02159933, -2.7178],
+                        [0.0, 0.0, 0.0, 1.0]])
+      },
+      {
+          'pos': [-0.7298, -0.1995, 0.3666],
+          'quat': [0.58847272, 0.44682507, 0.51443343, -0.43520737],
+          'hmat':
+              np.array([[0.09190557, 0.97193884, 0.21653695, -0.7298],
+                        [-0.05249182, 0.22188379, -0.97365918, -0.1995],
+                        [-0.99438321, 0.07811829, 0.07141119, 0.3666],
+                        [0.0, 0.0, 0.0, 1.0]])
+      },
   )
+  def test_pos_quat_to_hmat_and_inverse(self, pos, quat, hmat):
+    """Tests hard-coded pos-quat-hmat triples if mj not avail."""
+    mat = transformations.pos_quat_to_hmat(pos, quat)
+    np.testing.assert_allclose(mat, hmat, atol=1e-7)
+    np.testing.assert_allclose(mat[3], [0, 0, 0, 1], atol=1e-7)
+
+    # Test inverse
+    new_pos, new_quat = transformations.hmat_to_pos_quat(hmat)
+    np.testing.assert_allclose(new_pos, pos, atol=1e-7)
+    self.assertTrue(
+        np.allclose(new_quat, quat, atol=1e-7) or
+        np.allclose(-new_quat, quat, atol=1e-7))
+
+  @parameterized.parameters(
+      {
+          'twist': [1, 0, 0, 0, 0, 0],
+          'cfg': (0, 0, 0, np.radians(0), np.radians(90), np.radians(0))
+      }, {
+          'twist': [1, 2, 3, -3, 2, -1],
+          'cfg': (-1, 2, 3, np.radians(30), np.radians(60), np.radians(90))
+      })
   def test_velocity_transform_special(self, twist, cfg):
     # Test for special values that often cause numerical issues.
     x, y, z, rx, ry, rz = cfg
@@ -187,7 +230,10 @@ class TransformationsTest(parameterized.TestCase):
   def test_euler_to_rmat_special(self, angles):
     # Test for special values that often cause numerical issues.
     r1, r2, r3 = angles
-    for ordering in transformations._eulermap.keys():
+    orderings = ('XYZ', 'XYX', 'XZY', 'ZYX', 'YZX', 'ZXY', 'YXZ', 'XZX', 'YXY',
+                 'YZY', 'ZXZ', 'ZYZ')
+
+    for ordering in orderings:
       r = transformations.euler_to_rmat(np.array([r1, r2, r3]), ordering)
       euler_angles = transformations.rmat_to_euler(r, ordering)
       np.testing.assert_allclose(euler_angles, [r1, r2, r3])
@@ -419,7 +465,7 @@ class TransformationsTest(parameterized.TestCase):
       rmat2 = transformations.quat_to_mat(quat2[k])[0:3, 0:3]
       rmat_prod_q = transformations.quat_to_mat(quat_prod[k])[0:3, 0:3]
       rmat_prod = rmat1.dot(rmat2)
-      np.testing.assert_allclose(rmat_prod, rmat_prod_q)
+      np.testing.assert_allclose(rmat_prod, rmat_prod_q, atol=1e-5)
 
   def test_quat_slerp_random(self):
     for _ in range(_NUM_RANDOM_SAMPLES):
@@ -446,7 +492,7 @@ class TransformationsTest(parameterized.TestCase):
       full_rotated_quat = transformations.quat_mul(quat0, full_quat_rot)
       partial_rotated_quat = transformations.quat_mul(quat0, partial_quat_rot)
       slerp_quat = transformations.quat_slerp(quat0, full_rotated_quat, frac)
-      np.testing.assert_allclose(partial_rotated_quat, slerp_quat, atol=1e-5)
+      np.testing.assert_allclose(partial_rotated_quat, slerp_quat, atol=1e-4)
 
       # Test that it takes the shortest path
       full_angle = self._random_state.uniform(0, 90)
@@ -634,7 +680,7 @@ class TransformationsTest(parameterized.TestCase):
       computed_quat = transformations.quat_between_vectors(
           source_vec, target_vec)
       computed_target = transformations.quat_rotate(computed_quat, source_vec)
-      np.testing.assert_allclose(target_vec, computed_target)
+      np.testing.assert_allclose(target_vec, computed_target, atol=0.005)
 
   def test_quat_between_vectors_inverse(self):
     # test quat_between_vectors with inverse vectors

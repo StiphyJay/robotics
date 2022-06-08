@@ -44,15 +44,17 @@ setuptools.setup(
     name="dm_robotics-geometry",
     package_dir={"dm_robotics.geometry": ""},
     packages=["dm_robotics.geometry"],
-    version="0.0.1rc1",
+    version="0.4.0",
     license="Apache 2.0",
     author="DeepMind",
     description="This library provides primitives for dealing with scene and robot geometry",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/deepmind/dm_robotics/geometry",
-    install_requires=(_get_requirements("requirements.txt")
-                      + _get_requirements("requirements_external.txt")),
+    url="https://github.com/deepmind/dm_robotics/tree/main/py/geometry",
+    python_requires=">=3.7, <3.10",
+    setup_requires=["wheel >= 0.31.0"],
+    install_requires=(_get_requirements("requirements.txt") +
+                      _get_requirements("requirements_external.txt")),
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Programming Language :: Python :: 3",

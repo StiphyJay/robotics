@@ -52,9 +52,6 @@ class MujocoEffector(effector.Effector):
   def prefix(self) -> str:
     return self._prefix
 
-  def after_compile(self, mjcf_model: mjcf.RootElement) -> None:
-    pass
-
   def initialize_episode(self, physics: mjcf.Physics,
                          random_state: np.random.RandomState) -> None:
     pass
@@ -124,7 +121,7 @@ def _action_range_from_actuators(
   num_actions = len(actuators)
 
   control_range = physics.bind(actuators).ctrlrange
-  is_limited = physics.bind(actuators).ctrllimited.astype(np.bool)
+  is_limited = physics.bind(actuators).ctrllimited.astype(bool)
 
   minima = np.full(num_actions, fill_value=-np.inf, dtype=np.float32)
   maxima = np.full(num_actions, fill_value=np.inf, dtype=np.float32)

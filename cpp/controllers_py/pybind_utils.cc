@@ -15,6 +15,9 @@
 #include "pybind_utils.h"  // controller
 
 #include <dlfcn.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/stat.h>
 
 #include <string>
 
@@ -45,11 +48,16 @@ py::module GetCtypesModule() {
 // Returns a pointer to the underlying object pointed to by `ctypes_obj`.
 // Note that does not increment the reference count.
 template <class T>
-T* GetPointer(py::handle ctypes_obj) {
+T* GetPointer(py::handle mjwrapper_object) {
+#ifdef DM_ROBOTICS_USE_NEW_MUJOCO_BINDINGS
+  return reinterpret_cast<T*>(
+      mjwrapper_object.attr("_address").cast<std::uintptr_t>());
+#else
   auto ctypes_module = GetCtypesModule();
   return reinterpret_cast<T*>(
-      ctypes_module.attr("addressof")(ctypes_obj.attr("contents"))
+      ctypes_module.attr("addressof")(mjwrapper_object.attr("contents"))
           .cast<std::uintptr_t>());
+#endif
 }
 
 // Returns a pointer to a MuJoCo mjModel or mjData from the dm_control wrappers
@@ -79,24 +87,31 @@ void RaiseRuntimeErrorWithMessage(absl::string_view message) {
 
 const MjLib* LoadMjLibFromDmControl() {
   py::gil_scoped_acquire gil;
+  // Get the path to the mujoco library.
+  const py::module mujoco(py::module::import("mujoco"));
 
-  // Get the path to the DSO.
-  const py::module mjbindings(
-      py::module::import("dm_control.mujoco.wrapper.mjbindings"));
-  const std::string dso_path =
-      mjbindings.attr("mjlib").attr("_name").cast<std::string>();
+  const py::list mujoco_path = mujoco.attr("__path__");
+  if (mujoco_path.empty()) {
+    RaiseRuntimeErrorWithMessage("mujoco.__path__ is empty");
+    return nullptr;
+  }
+  const auto path = py::str(mujoco_path[0]).cast<std::string>();
+  // Not all MuJoCo releases have __version__, they do have mj_versionString.
+  const auto version = mujoco.attr("mj_versionString")().cast<std::string>();
+  const std::string dso_path = path + "/libmujoco.so." + version;
+
+  struct stat buffer;
+  if (stat(dso_path.c_str(), &buffer) != 0) {
+    RaiseRuntimeErrorWithMessage(absl::Substitute(
+        "LoadMjLibFromDmComtrol: Cannot access mujoco library file "
+        "$0, error: $1",
+        dso_path, strerror(errno)));
+    return nullptr;
+  }
+  py::print("Loading mujoco from " + dso_path);
 
   // Create the MjLib object by dlopen'ing the DSO.
-  auto* mjlib = new MjLib(dso_path, RTLD_NOW);
-
-  // Activate the MuJoCo library.
-  const py::module mjutil(py::module::import("dm_control.mujoco.wrapper.util"));
-  const std::string key_path =
-      mjutil.attr("get_mjkey_path")().cast<std::string>();
-  CHECK_EQ(mjlib->mj_activate(key_path.c_str()), 1)
-      << "Unable to activate MuJoCo with license located in: " << key_path;
-
-  return mjlib;
+  return new MjLib(dso_path, RTLD_NOW);
 }
 
 // Helper function for getting an mjModel object from a py::handle.
